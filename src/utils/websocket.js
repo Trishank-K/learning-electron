@@ -23,15 +23,18 @@ function generateUID() {
     return uuidv4().split('-')[0].toUpperCase();
 }
 
-function initializeWebSocketServer(port = 8080) {
+function initializeWebSocketServer(port = 8080, host = '0.0.0.0') {
     if (wss) {
         console.log('WebSocket server already running');
         return wss;
     }
 
-    wss = new WebSocketServer({ port });
+    wss = new WebSocketServer({ 
+        port,
+        host // Listen on all network interfaces for remote connections
+    });
 
-    console.log(`WebSocket server started on port ${port}`);
+    console.log(`WebSocket server started on ${host}:${port}`);
 
     wss.on('connection', ws => {
         const clientId = uuidv4();

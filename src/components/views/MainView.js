@@ -116,6 +116,55 @@ export class MainView extends LitElement {
             margin-bottom: 6px;
         }
 
+        .server-config {
+            margin-bottom: 20px;
+            padding: 16px;
+            background: var(--input-background);
+            border: 1px solid var(--button-border);
+            border-radius: 8px;
+        }
+
+        .server-config-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--text-color);
+        }
+
+        .config-input-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .config-input-group label {
+            min-width: 80px;
+            font-size: 13px;
+            color: var(--description-color);
+        }
+
+        .config-input-group input {
+            flex: 1;
+            font-size: 13px;
+        }
+
+        .protocol-select {
+            background: var(--input-background);
+            color: var(--text-color);
+            border: 1px solid var(--button-border);
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .protocol-select:focus {
+            outline: none;
+            border-color: var(--focus-border-color);
+            box-shadow: 0 0 0 3px var(--focus-box-shadow);
+        }
+
         .start-button {
             background: var(--start-button-background);
             color: var(--start-button-color);
@@ -197,6 +246,9 @@ export class MainView extends LitElement {
         selectedRole: { type: String },
         uid: { type: String },
         pairWithUID: { type: String },
+        serverProtocol: { type: String },
+        serverHost: { type: String },
+        serverPort: { type: String },
     };
 
     constructor() {
@@ -210,6 +262,9 @@ export class MainView extends LitElement {
         this.selectedRole = localStorage.getItem('selectedRole') || 'asker';
         this.uid = '';
         this.pairWithUID = localStorage.getItem('pairWithUID') || '';
+        this.serverProtocol = localStorage.getItem('serverProtocol') || 'ws';
+        this.serverHost = localStorage.getItem('serverHost') || 'localhost';
+        this.serverPort = localStorage.getItem('serverPort') || '8080';
     }
 
     connectedCallback() {
@@ -255,8 +310,43 @@ export class MainView extends LitElement {
         localStorage.setItem('pairWithUID', this.pairWithUID);
     }
 
+    handleServerConfigChange(field, value) {
+        this[field] = value;
+        localStorage.setItem(field, value);
+    }
+
+    getServerUrl() {
+        const protocol = this.serverProtocol || 'ws';
+        const host = this.serverHost || 'localhost';
+        const port = this.serverPort || '8080';
+        return `${protocol}://${host}:${port}`;
+    }
+
     handleStartClick() {
         if (this.isInitializing) {
+            return;
+        }
+        
+        // Validate server configuration
+        if (!this.serverHost.trim()) {
+            const input = this.shadowRoot.querySelector('#serverHost');
+            if (input) {
+                input.style.animation = 'blink-red 1s ease-in-out';
+                setTimeout(() => {
+                    input.style.animation = '';
+                }, 1000);
+            }
+            return;
+        }
+
+        if (!this.serverPort.trim()) {
+            const input = this.shadowRoot.querySelector('#serverPort');
+            if (input) {
+                input.style.animation = 'blink-red 1s ease-in-out';
+                setTimeout(() => {
+                    input.style.animation = '';
+                }, 1000);
+            }
             return;
         }
         
@@ -272,7 +362,8 @@ export class MainView extends LitElement {
             return;
         }
         
-        this.onStart(this.selectedRole, this.pairWithUID);
+        const serverUrl = this.getServerUrl();
+        this.onStart(this.selectedRole, this.pairWithUID, serverUrl);
     }
 
     handleAPIKeyHelpClick() {
@@ -355,9 +446,52 @@ export class MainView extends LitElement {
 
     render() {
         const showPairInput = this.selectedRole === 'helper';
+        const serverUrl = this.getServerUrl();
         
         return html`
             <div class="welcome">Select Your Role</div>
+
+            <div class="server-config">
+                <div class="server-config-title">WebSocket Server Configuration</div>
+                
+                <div class="config-input-group">
+                    <label>Protocol:</label>
+                    <select 
+                        class="protocol-select"
+                        .value=${this.serverProtocol}
+                        @change=${(e) => this.handleServerConfigChange('serverProtocol', e.target.value)}
+                    >
+                        <option value="ws">ws:// (Standard)</option>
+                        <option value="wss">wss:// (Secure)</option>
+                    </select>
+                </div>
+
+                <div class="config-input-group">
+                    <label>Host:</label>
+                    <input
+                        id="serverHost"
+                        type="text"
+                        placeholder="localhost or server IP"
+                        .value=${this.serverHost}
+                        @input=${(e) => this.handleServerConfigChange('serverHost', e.target.value)}
+                    />
+                </div>
+
+                <div class="config-input-group">
+                    <label>Port:</label>
+                    <input
+                        id="serverPort"
+                        type="text"
+                        placeholder="8080"
+                        .value=${this.serverPort}
+                        @input=${(e) => this.handleServerConfigChange('serverPort', e.target.value)}
+                    />
+                </div>
+
+                <div style="margin-top: 8px; font-size: 12px; color: var(--description-color);">
+                    Server URL: <span style="font-family: 'Monaco', 'Menlo', monospace; color: var(--text-color);">${serverUrl}</span>
+                </div>
+            </div>
 
             <div class="role-selection">
                 <button 

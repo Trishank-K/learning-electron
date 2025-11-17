@@ -27,8 +27,11 @@ app.whenReady().then(async () => {
     await applyAntiAnalysisMeasures();
 
     // Initialize WebSocket server
-    initializeWebSocketServer(8080);
-    console.log('WebSocket server initialized on port 8080');
+    // Use environment variable for production or default to localhost
+    const wsPort = process.env.WS_PORT || 8080;
+    const wsHost = process.env.WS_HOST || '0.0.0.0';
+    initializeWebSocketServer(wsPort, wsHost);
+    console.log(`WebSocket server initialized on ${wsHost}:${wsPort}`);
 
     createMainWindow();
     setupGeminiIpcHandlers(geminiSessionRef);
@@ -59,13 +62,16 @@ function setupWebSocketIpcHandlers() {
     const WebSocket = require('ws');
 
     // Connect to WebSocket server as client
-    ipcMain.handle('ws-connect', async (event, role, pairWithUID) => {
+    ipcMain.handle('ws-connect', async (event, role, pairWithUID, customServerUrl) => {
         try {
             if (wsClient && wsClient.readyState === WebSocket.OPEN) {
                 return { success: false, error: 'Already connected' };
             }
 
-            wsClient = new WebSocket('ws://localhost:8080');
+            // Priority: customServerUrl (from UI) > environment variable > localhost
+            const wsServerUrl = customServerUrl || process.env.WS_SERVER_URL || 'ws://localhost:8080';
+            console.log('Connecting to WebSocket server:', wsServerUrl);
+            wsClient = new WebSocket(wsServerUrl);
             
             return new Promise((resolve) => {
                 wsClient.on('open', () => {

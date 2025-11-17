@@ -327,12 +327,12 @@ export class CheatingDaddyApp extends LitElement {
     }
 
     // Main view event handlers
-    async handleStart(role, pairWithUID) {
+    async handleStart(role, pairWithUID, serverUrl) {
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
             
-            // Connect to WebSocket server
-            const connectResult = await ipcRenderer.invoke('ws-connect');
+            // Connect to WebSocket server with custom URL
+            const connectResult = await ipcRenderer.invoke('ws-connect', role, pairWithUID, serverUrl);
             if (!connectResult.success) {
                 this.setStatus('Failed to connect: ' + connectResult.error);
                 return;
@@ -501,7 +501,7 @@ export class CheatingDaddyApp extends LitElement {
             case 'main':
                 return html`
                     <main-view
-                        .onStart=${(role, pairWithUID) => this.handleStart(role, pairWithUID)}
+                        .onStart=${(role, pairWithUID, serverUrl) => this.handleStart(role, pairWithUID, serverUrl)}
                         .onAPIKeyHelp=${() => this.handleAPIKeyHelp()}
                         .onLayoutModeChange=${layoutMode => this.handleLayoutModeChange(layoutMode)}
                     ></main-view>
