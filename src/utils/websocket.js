@@ -8,7 +8,12 @@ function uuidv4() {
 
 const clients = new Map();
 
+// Store sessions for reconnection
+// sessions: Map<uid, { role, pairedWith, lastSeen, clientId }>
 const sessions = new Map();
+
+// Session expiry time (30 minutes)
+const SESSION_EXPIRY = 30 * 60 * 1000;
 
 let wss = null;
 
@@ -38,22 +43,21 @@ function initializeWebSocketServer(port = 8080, host = '0.0.0.0') {
 
     wss.on('connection', ws => {
         const clientId = uuidv4();
-        const uid = generateUID();
 
         console.log(`New client connected: ${clientId}`);
 
         clients.set(clientId, {
             ws,
-            uid,
+            uid: null,
             role: null,
             pairedWith: null,
+            pendingUIDAssignment: true
         });
 
         ws.send(
             JSON.stringify({
-                type: 'connected',
+                type: 'connection-ready',
                 clientId,
-                uid,
             })
         );
 
@@ -93,9 +97,17 @@ function handleClientMessage(clientId, message) {
     const client = clients.get(clientId);
     if (!client) return;
 
-    console.log('Received message:', message.type, 'from', client.role || 'unknown role');
+    console.log('Received message:', message.type, 'from', client.uid || 'pending', client.role || 'unknown role');
 
     switch (message.type) {
+        case 'reconnect':
+            handleReconnect(clientId, message.uid, message.role, message.pairWithUID);
+            break;
+
+        case 'new-connection':
+            handleNewConnection(clientId);
+            break;
+
         case 'set-role':
             handleSetRole(clientId, message.role, message.pairWithUID);
             break;
@@ -117,6 +129,73 @@ function handleClientMessage(clientId, message) {
     }
 }
 
+function handleReconnect(clientId, oldUID, role, pairWithUID) {
+    const client = clients.get(clientId);
+    if (!client) return;
+
+    const session = sessions.get(oldUID);
+    const now = Date.now();
+
+    if (session && (now - session.lastSeen < SESSION_EXPIRY)) {
+        console.log(`Reconnecting ${oldUID} (${role})`);
+        
+        client.uid = oldUID;
+        client.role = role;
+        client.pairedWith = session.pairedWith;
+        client.pendingUIDAssignment = false;
+
+        session.lastSeen = now;
+        session.clientId = clientId;
+
+        client.ws.send(JSON.stringify({
+            type: 'reconnected',
+            uid: oldUID,
+            role: role,
+            pairedWith: session.pairedWith
+        }));
+
+        if (session.pairedWith) {
+            const partner = Array.from(clients.values()).find(
+                c => c.uid === session.pairedWith
+            );
+            if (partner) {
+                partner.ws.send(JSON.stringify({
+                    type: 'partner-reconnected',
+                    partnerUID: oldUID
+                }));
+                console.log(`Notified ${session.pairedWith} that ${oldUID} reconnected`);
+            }
+        }
+    } else {
+        console.log(`Session expired or not found for ${oldUID}, assigning new UID`);
+        handleNewConnection(clientId);
+    }
+}
+
+function handleNewConnection(clientId) {
+    const client = clients.get(clientId);
+    if (!client) return;
+
+    const uid = generateUID();
+    console.log(`Assigned new UID: ${uid}`);
+
+    client.uid = uid;
+    client.pendingUIDAssignment = false;
+
+    sessions.set(uid, {
+        role: null,
+        pairedWith: null,
+        lastSeen: Date.now(),
+        clientId: clientId
+    });
+
+    client.ws.send(JSON.stringify({
+        type: 'connected',
+        clientId,
+        uid,
+    }));
+}
+
 function handleSetRole(clientId, role, pairWithUID) {
     const client = clients.get(clientId);
     if (!client) return;
@@ -134,12 +213,29 @@ function handleSetRole(clientId, role, pairWithUID) {
     client.role = role;
     console.log(`Client ${clientId} set role to ${role}`);
 
+    const session = sessions.get(client.uid);
+    if (session) {
+        session.role = role;
+        session.lastSeen = Date.now();
+    }
+
     if (role === 'helper' && pairWithUID) {
         const askerClient = Array.from(clients.values()).find(c => c.uid === pairWithUID && c.role === 'asker');
 
         if (askerClient) {
             client.pairedWith = pairWithUID;
             askerClient.pairedWith = client.uid;
+
+            const helperSession = sessions.get(client.uid);
+            const askerSession = sessions.get(askerClient.uid);
+            if (helperSession) {
+                helperSession.pairedWith = pairWithUID;
+                helperSession.lastSeen = Date.now();
+            }
+            if (askerSession) {
+                askerSession.pairedWith = client.uid;
+                askerSession.lastSeen = Date.now();
+            }
 
             client.ws.send(
                 JSON.stringify({
@@ -243,6 +339,12 @@ function handleClientDisconnect(clientId) {
     const client = clients.get(clientId);
     if (!client) return;
 
+    if (client.uid && sessions.has(client.uid)) {
+        const session = sessions.get(client.uid);
+        session.lastSeen = Date.now();
+        console.log(`Session preserved for ${client.uid} (${SESSION_EXPIRY / 60000} min reconnection window)`);
+    }
+
     if (client.pairedWith) {
         const pairedClient = Array.from(clients.values()).find(c => c.uid === client.pairedWith);
 
@@ -250,14 +352,35 @@ function handleClientDisconnect(clientId) {
             pairedClient.ws.send(
                 JSON.stringify({
                     type: 'partner-disconnected',
+                    canReconnect: true,
+                    reconnectWindow: SESSION_EXPIRY / 1000
                 })
             );
-            pairedClient.pairedWith = null;
+            console.log(`Notified ${pairedClient.uid} about partner disconnect (can reconnect)`);
         }
     }
 
     clients.delete(clientId);
 }
+
+function cleanupExpiredSessions() {
+    const now = Date.now();
+    let expiredCount = 0;
+    
+    for (const [uid, session] of sessions.entries()) {
+        if (now - session.lastSeen > SESSION_EXPIRY) {
+            sessions.delete(uid);
+            expiredCount++;
+        }
+    }
+    
+    if (expiredCount > 0) {
+        console.log(`Cleaned up ${expiredCount} expired session(s)`);
+    }
+}
+
+// Clean up expired sessions periodically
+setInterval(cleanupExpiredSessions, 5 * 60 * 1000);
 
 function closeWebSocketServer() {
     if (wss) {
