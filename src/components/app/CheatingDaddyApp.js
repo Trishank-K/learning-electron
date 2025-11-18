@@ -100,6 +100,7 @@ export class CheatingDaddyApp extends LitElement {
     static properties = {
         currentView: { type: String },
         statusText: { type: String },
+        connectionStatus: { type: String },
         startTime: { type: Number },
         isRecording: { type: Boolean },
         sessionActive: { type: Boolean },
@@ -121,6 +122,7 @@ export class CheatingDaddyApp extends LitElement {
         super();
         this.currentView = localStorage.getItem('onboardingCompleted') ? 'main' : 'onboarding';
         this.statusText = '';
+        this.connectionStatus = 'disconnected';
         this.startTime = null;
         this.isRecording = false;
         this.sessionActive = false;
@@ -168,6 +170,7 @@ export class CheatingDaddyApp extends LitElement {
             ipcRenderer.on('ws-connected', (_, data) => {
                 console.log('WebSocket connected:', data);
                 this.wsConnected = true;
+                this.connectionStatus = 'connected';
                 this.userUID = data.uid;
                 
                 // Update MainView with UID
@@ -182,13 +185,16 @@ export class CheatingDaddyApp extends LitElement {
             ipcRenderer.on('ws-role-set', (_, data) => {
                 console.log('Role set:', data);
                 this.userRole = data.role;
+                this.userUID = data.uid;
                 this.setStatus(`Connected as ${data.role}`);
+                this.requestUpdate();
             });
             
             ipcRenderer.on('ws-paired', (_, data) => {
                 console.log('Paired:', data);
                 this.pairedUID = data.pairedWithUID;
                 this.setStatus(`Paired with ${data.pairedWithUID}`);
+                this.requestUpdate();
             });
             
             ipcRenderer.on('ws-question-received', (_, data) => {
@@ -199,24 +205,78 @@ export class CheatingDaddyApp extends LitElement {
                 }
             });
             
-            ipcRenderer.on('ws-partner-disconnected', () => {
-                this.setStatus('Partner disconnected');
-                this.pairedUID = '';
+            ipcRenderer.on('ws-partner-disconnected', (_, data) => {
+                if (data.canReconnect) {
+                    const minutes = Math.floor(data.reconnectWindow / 60);
+                    this.setStatus(`Partner disconnected (can reconnect within ${minutes} min)`);
+                } else {
+                    this.setStatus('Partner disconnected');
+                    this.pairedUID = '';
+                }
             });
-            
+
+            ipcRenderer.on('ws-partner-reconnected', (_, data) => {
+                console.log('Partner reconnected:', data);
+                // Restore pairing if not already set
+                if (!this.pairedUID && data.partnerUID) {
+                    this.pairedUID = data.partnerUID;
+                }
+                this.setStatus(`Partner reconnected: ${data.partnerUID}`);
+                this.requestUpdate();
+            });
+
             ipcRenderer.on('ws-disconnected', () => {
                 this.wsConnected = false;
-                this.setStatus('Disconnected');
+                this.connectionStatus = 'reconnecting';
+                this.setStatus('Disconnected - Attempting to reconnect...');
             });
-            
+
+            ipcRenderer.on('ws-reconnecting', (_, data) => {
+                this.connectionStatus = 'reconnecting';
+                this.setStatus(`Reconnecting... (attempt ${data.attempt}, ${Math.round(data.delay / 1000)}s)`);
+            });
+
+            ipcRenderer.on('ws-reconnected', (_, data) => {
+                console.log('Successfully reconnected:', data);
+                this.wsConnected = true;
+                this.connectionStatus = 'connected';
+                this.userUID = data.uid;
+                this.userRole = data.role;
+                
+                // If we were paired before, restore pairing and notify user
+                if (data.pairedWith) {
+                    this.pairedUID = data.pairedWith;
+                    this.setStatus(`Reconnected and paired with ${data.pairedWith}`);
+                } else {
+                    this.setStatus(`Reconnected as ${data.role}`);
+                }
+                
+                // Ensure we're on the correct view for the role
+                if (data.role === 'helper' && this.currentView !== 'helper') {
+                    this.currentView = 'helper';
+                } else if (data.role === 'asker' && this.currentView !== 'assistant') {
+                    this.currentView = 'assistant';
+                }
+                
+                this.requestUpdate();
+            });
+
+            ipcRenderer.on('ws-reconnect-failed', (_, data) => {
+                this.connectionStatus = 'disconnected';
+                this.setStatus(`Reconnection failed: ${data.reason}. Please restart.`);
+            });
+
+            ipcRenderer.on('manual-reconnect', async () => {
+                console.log('Manual reconnect triggered');
+                await this.handleManualReconnect();
+            });
+
             ipcRenderer.on('ws-error', (_, data) => {
                 console.error('WebSocket error:', data);
                 this.setStatus('Error: ' + (data.error || 'Unknown error'));
             });
         }
-    }
-
-    disconnectedCallback() {
+    }    disconnectedCallback() {
         super.disconnectedCallback();
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
@@ -228,7 +288,12 @@ export class CheatingDaddyApp extends LitElement {
             ipcRenderer.removeAllListeners('ws-paired');
             ipcRenderer.removeAllListeners('ws-question-received');
             ipcRenderer.removeAllListeners('ws-partner-disconnected');
+            ipcRenderer.removeAllListeners('ws-partner-reconnected');
             ipcRenderer.removeAllListeners('ws-disconnected');
+            ipcRenderer.removeAllListeners('ws-reconnecting');
+            ipcRenderer.removeAllListeners('ws-reconnected');
+            ipcRenderer.removeAllListeners('ws-reconnect-failed');
+            ipcRenderer.removeAllListeners('manual-reconnect');
             ipcRenderer.removeAllListeners('ws-error');
         }
     }
@@ -368,6 +433,21 @@ export class CheatingDaddyApp extends LitElement {
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
             await ipcRenderer.invoke('open-external', 'https://cheatingdaddy.com/help/api-key');
+        }
+    }
+
+    async handleManualReconnect() {
+        if (window.require) {
+            const { ipcRenderer } = window.require('electron');
+            this.connectionStatus = 'reconnecting';
+            this.setStatus('Manual reconnection initiated...');
+            
+            const result = await ipcRenderer.invoke('ws-reconnect');
+            
+            if (!result.success) {
+                this.connectionStatus = 'disconnected';
+                this.setStatus('Reconnection failed: ' + result.error);
+            }
         }
     }
 
@@ -582,6 +662,7 @@ export class CheatingDaddyApp extends LitElement {
                     <app-header
                         .currentView=${this.currentView}
                         .statusText=${this.statusText}
+                        .connectionStatus=${this.connectionStatus}
                         .startTime=${this.startTime}
                         .advancedMode=${this.advancedMode}
                         .userUID=${this.userUID}
@@ -590,6 +671,7 @@ export class CheatingDaddyApp extends LitElement {
                         .onHelpClick=${() => this.handleHelpClick()}
                         .onHistoryClick=${() => this.handleHistoryClick()}
                         .onAdvancedClick=${() => this.handleAdvancedClick()}
+                        .onReconnectClick=${() => this.handleManualReconnect()}
                         .onCloseClick=${() => this.handleClose()}
                         .onBackClick=${() => this.handleBackClick()}
                         .onHideToggleClick=${() => this.handleHideToggle()}

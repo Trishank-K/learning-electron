@@ -27,15 +27,21 @@ module.exports = {
     },
     rebuildConfig: {},
     makers: [
+        // Squirrel requires Wine and Mono on Linux - disabled for cross-platform builds
+        // {
+        //     name: '@electron-forge/maker-squirrel',
+        //     platforms: ['win32'],
+        //     config: {
+        //         name: 'cheating-daddy',
+        //         productName: 'Cheating Daddy',
+        //         shortcutName: 'Cheating Daddy',
+        //         createDesktopShortcut: true,
+        //         createStartMenuShortcut: true,
+        //     },
+        // },
         {
-            name: '@electron-forge/maker-squirrel',
-            config: {
-                name: 'cheating-daddy',
-                productName: 'Cheating Daddy',
-                shortcutName: 'Cheating Daddy',
-                createDesktopShortcut: true,
-                createStartMenuShortcut: true,
-            },
+            name: '@electron-forge/maker-zip',
+            platforms: ['win32', 'darwin', 'linux'],
         },
         {
             name: '@electron-forge/maker-dmg',

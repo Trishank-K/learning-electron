@@ -79,6 +79,89 @@ export class AppHeader extends LitElement {
             background: transparent;
         }
 
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .connection-status.connected {
+            background: rgba(76, 175, 80, 0.1);
+            color: #4caf50;
+        }
+
+        .connection-status.reconnecting {
+            background: rgba(255, 152, 0, 0.1);
+            color: #ff9800;
+        }
+
+        .connection-status.disconnected {
+            background: rgba(244, 67, 54, 0.1);
+            color: #f44336;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.connected {
+            background: #4caf50;
+        }
+
+        .status-dot.reconnecting {
+            background: #ff9800;
+            animation: pulse 0.8s infinite;
+        }
+
+        .status-dot.disconnected {
+            background: #f44336;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.3;
+            }
+        }
+
+        .reconnect-button {
+            background: var(--start-button-background);
+            color: var(--start-button-color);
+            border: 1px solid var(--start-button-border);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.2s ease;
+        }
+
+        .reconnect-button:hover {
+            background: var(--start-button-hover-background);
+            border-color: var(--start-button-hover-border);
+            transform: translateY(-1px);
+        }
+
+        .reconnect-button:active {
+            transform: translateY(0);
+        }
+
+        .reconnect-button.reconnecting {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
         .key {
             background: var(--key-background);
             padding: 2px 6px;
@@ -91,6 +174,7 @@ export class AppHeader extends LitElement {
     static properties = {
         currentView: { type: String },
         statusText: { type: String },
+        connectionStatus: { type: String },
         startTime: { type: Number },
         onCustomizeClick: { type: Function },
         onHelpClick: { type: Function },
@@ -101,6 +185,7 @@ export class AppHeader extends LitElement {
         isClickThrough: { type: Boolean, reflect: true },
         advancedMode: { type: Boolean },
         onAdvancedClick: { type: Function },
+        onReconnectClick: { type: Function },
         userUID: { type: String },
         userRole: { type: String },
     };
@@ -109,6 +194,8 @@ export class AppHeader extends LitElement {
         super();
         this.currentView = 'main';
         this.statusText = '';
+        this.connectionStatus = 'disconnected'; // 'connected', 'reconnecting', 'disconnected'
+        this.onReconnectClick = () => {};
         this.startTime = null;
         this.onCustomizeClick = () => {};
         this.onHelpClick = () => {};
@@ -216,7 +303,52 @@ export class AppHeader extends LitElement {
                                   ? html`<span style="font-family: 'Monaco', 'Menlo', monospace; font-weight: 600;">UID: ${this.userUID}</span>`
                                   : ''}
                               ${this.currentView === 'assistant' ? html`<span>${elapsedTime}</span>` : ''}
-                              <span>${this.statusText}</span>
+                              <div class="connection-status ${this.connectionStatus}">
+                                  <div class="status-dot ${this.connectionStatus}"></div>
+                                  <span>${this.statusText}</span>
+                              </div>
+                              ${this.connectionStatus === 'disconnected' || this.connectionStatus === 'reconnecting'
+                                  ? html`
+                                        <button
+                                            class="reconnect-button ${this.connectionStatus}"
+                                            @click=${this.onReconnectClick}
+                                            ?disabled=${this.connectionStatus === 'reconnecting'}
+                                            title="Reconnect to session (${navigator.platform.toUpperCase().indexOf('MAC') >= 0 ? 'Cmd+R' : 'Ctrl+R'})"
+                                        >
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path
+                                                    d="M21.168 8A10.003 10.003 0 0 0 12 2C6.815 2 2.55 5.947 2.05 11"
+                                                    stroke="currentColor"
+                                                    stroke-width="2"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                />
+                                                <path
+                                                    d="M17 8h4.4a.6.6 0 0 0 .6-.6V3"
+                                                    stroke="currentColor"
+                                                    stroke-width="2"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                />
+                                                <path
+                                                    d="M2.881 16c1.544 3.532 5.068 6 9.168 6 5.186 0 9.45-3.947 9.951-9"
+                                                    stroke="currentColor"
+                                                    stroke-width="2"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                />
+                                                <path
+                                                    d="M7.05 16h-4.4a.6.6 0 0 0-.6.6V21"
+                                                    stroke="currentColor"
+                                                    stroke-width="2"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                />
+                                            </svg>
+                                            ${this.connectionStatus === 'reconnecting' ? 'Reconnecting...' : 'Reconnect'}
+                                        </button>
+                                    `
+                                  : ''}
                           `
                         : ''}
                     ${this.currentView === 'main'

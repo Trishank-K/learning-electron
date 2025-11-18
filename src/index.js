@@ -60,9 +60,53 @@ app.on('activate', () => {
 
 function setupWebSocketIpcHandlers() {
     const WebSocket = require('ws');
+    
+    // Reconnection state
+    let reconnectAttempts = 0;
+    let reconnectTimeout = null;
+    let savedConnectionInfo = null;
+    const MAX_RECONNECT_ATTEMPTS = 10;
+    const BASE_RECONNECT_DELAY = 1000; // 1 second
+    const MAX_RECONNECT_DELAY = 30000; // 30 seconds
 
-    // Connect to WebSocket server as client
-    ipcMain.handle('ws-connect', async (event, role, pairWithUID, customServerUrl) => {
+    // Function to attempt reconnection with exponential backoff
+    function attemptReconnect() {
+        if (!savedConnectionInfo) {
+            console.log('No saved connection info, cannot reconnect');
+            return;
+        }
+
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            console.log('Max reconnect attempts reached');
+            sendToRenderer('ws-reconnect-failed', { reason: 'Max attempts reached' });
+            return;
+        }
+
+        const delay = Math.min(
+            BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts),
+            MAX_RECONNECT_DELAY
+        );
+
+        console.log(`Attempting reconnection in ${delay}ms (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+        sendToRenderer('ws-reconnecting', { attempt: reconnectAttempts + 1, delay });
+
+        reconnectTimeout = setTimeout(async () => {
+            reconnectAttempts++;
+            const result = await connectToWebSocket(
+                savedConnectionInfo.role,
+                savedConnectionInfo.pairWithUID,
+                savedConnectionInfo.serverUrl,
+                savedConnectionInfo.uid
+            );
+
+            if (!result.success) {
+                attemptReconnect();
+            }
+        }, delay);
+    }
+
+    // Core connection function
+    async function connectToWebSocket(role, pairWithUID, customServerUrl, existingUID = null) {
         try {
             if (wsClient && wsClient.readyState === WebSocket.OPEN) {
                 return { success: false, error: 'Already connected' };
@@ -71,21 +115,57 @@ function setupWebSocketIpcHandlers() {
             // Priority: customServerUrl (from UI) > environment variable > localhost
             const wsServerUrl = customServerUrl || process.env.WS_SERVER_URL || 'ws://localhost:8080';
             console.log('Connecting to WebSocket server:', wsServerUrl);
+            
+            // Save connection info for reconnection
+            savedConnectionInfo = {
+                role,
+                pairWithUID,
+                serverUrl: wsServerUrl,
+                uid: existingUID
+            };
+
             wsClient = new WebSocket(wsServerUrl);
             
             return new Promise((resolve) => {
-                wsClient.on('open', () => {
-                    console.log('WebSocket client connected');
-                    
-                    // Set up message handler
-                    wsClient.on('message', (data) => {
+                let connectionReadyReceived = false;
+
+                // Set up message handler BEFORE open event
+                wsClient.on('message', (data) => {
                         try {
                             const message = JSON.parse(data.toString());
                             console.log('Received WebSocket message:', message.type);
                             
+                            // Handle connection-ready message
+                            if (message.type === 'connection-ready' && !connectionReadyReceived) {
+                                connectionReadyReceived = true;
+                                
+                                // Attempt to reconnect with existing UID or request new connection
+                                if (existingUID) {
+                                    console.log('Attempting to reconnect with UID:', existingUID);
+                                    wsClient.send(JSON.stringify({
+                                        type: 'reconnect',
+                                        uid: existingUID,
+                                        role,
+                                        pairWithUID
+                                    }));
+                                } else {
+                                    wsClient.send(JSON.stringify({
+                                        type: 'new-connection'
+                                    }));
+                                }
+                                return;
+                            }
+                            
                             // Forward messages to renderer
                             if (message.type === 'connected') {
+                                savedConnectionInfo.uid = message.uid;
+                                reconnectAttempts = 0; // Reset on successful connection
                                 sendToRenderer('ws-connected', message);
+                            } else if (message.type === 'reconnected') {
+                                savedConnectionInfo.uid = message.uid;
+                                reconnectAttempts = 0; // Reset on successful reconnection
+                                console.log('Successfully reconnected with UID:', message.uid);
+                                sendToRenderer('ws-reconnected', message);
                             } else if (message.type === 'role-set') {
                                 sendToRenderer('ws-role-set', message);
                             } else if (message.type === 'paired') {
@@ -95,7 +175,9 @@ function setupWebSocketIpcHandlers() {
                             } else if (message.type === 'question-received') {
                                 sendToRenderer('ws-question-received', message);
                             } else if (message.type === 'partner-disconnected') {
-                                sendToRenderer('ws-partner-disconnected', {});
+                                sendToRenderer('ws-partner-disconnected', message);
+                            } else if (message.type === 'partner-reconnected') {
+                                sendToRenderer('ws-partner-reconnected', message);
                             } else if (message.type === 'error') {
                                 sendToRenderer('ws-error', message);
                             }
@@ -104,29 +186,51 @@ function setupWebSocketIpcHandlers() {
                         }
                     });
 
-                    wsClient.on('close', () => {
-                        console.log('WebSocket client disconnected');
-                        sendToRenderer('ws-disconnected', {});
-                        wsClient = null;
-                    });
+                wsClient.on('close', () => {
+                    console.log('WebSocket client disconnected');
+                    sendToRenderer('ws-disconnected', {});
+                    const previousClient = wsClient;
+                    wsClient = null;
+                    
+                    // Attempt automatic reconnection (only if not manually closed)
+                    if (savedConnectionInfo && previousClient) {
+                        console.log('Connection lost, attempting to reconnect...');
+                        attemptReconnect();
+                    }
+                });
 
-                    wsClient.on('error', (error) => {
-                        console.error('WebSocket client error:', error);
-                        sendToRenderer('ws-error', { error: error.message });
-                    });
-
+                wsClient.on('open', () => {
+                    console.log('WebSocket client connected');
                     resolve({ success: true });
                 });
 
                 wsClient.on('error', (error) => {
-                    console.error('WebSocket connection error:', error);
-                    resolve({ success: false, error: error.message });
+                    console.error('WebSocket client error:', error);
+                    sendToRenderer('ws-error', { error: error.message });
+                    
+                    // If error occurs before connection is established, reject the promise
+                    if (wsClient && wsClient.readyState === WebSocket.CONNECTING) {
+                        wsClient = null;
+                        resolve({ success: false, error: error.message });
+                    }
                 });
             });
         } catch (error) {
             console.error('Error connecting to WebSocket:', error);
             return { success: false, error: error.message };
         }
+    }
+
+    // Connect to WebSocket server as client
+    ipcMain.handle('ws-connect', async (event, role, pairWithUID, customServerUrl) => {
+        // Clear any existing reconnection attempts
+        if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = null;
+        }
+        reconnectAttempts = 0;
+
+        return await connectToWebSocket(role, pairWithUID, customServerUrl);
     });
 
     // Set role (asker or helper)
@@ -187,9 +291,54 @@ function setupWebSocketIpcHandlers() {
         }
     });
 
+    // Manual reconnect
+    ipcMain.handle('ws-reconnect', async (event) => {
+        try {
+            // Clear any existing reconnection timeout
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+                reconnectTimeout = null;
+            }
+            
+            if (!savedConnectionInfo) {
+                return { success: false, error: 'No previous connection information' };
+            }
+
+            // Close existing connection if any
+            if (wsClient) {
+                wsClient.close();
+                wsClient = null;
+            }
+
+            // Reset reconnect attempts for manual reconnection
+            reconnectAttempts = 0;
+
+            // Attempt to reconnect with saved info
+            const result = await connectToWebSocket(
+                savedConnectionInfo.role,
+                savedConnectionInfo.pairWithUID,
+                savedConnectionInfo.serverUrl,
+                savedConnectionInfo.uid
+            );
+
+            return result;
+        } catch (error) {
+            console.error('Error during manual reconnect:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
     // Disconnect from WebSocket
     ipcMain.handle('ws-disconnect', async (event) => {
         try {
+            // Clear reconnection attempts
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+                reconnectTimeout = null;
+            }
+            savedConnectionInfo = null;
+            reconnectAttempts = 0;
+
             if (wsClient) {
                 wsClient.close();
                 wsClient = null;
