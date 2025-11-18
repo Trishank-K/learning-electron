@@ -126,8 +126,9 @@ function setupWebSocketIpcHandlers() {
 
             wsClient = new WebSocket(wsServerUrl);
             
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
                 let connectionReadyReceived = false;
+                let isResolved = false;
 
                 // Set up message handler BEFORE open event
                 wsClient.on('message', (data) => {
@@ -149,6 +150,7 @@ function setupWebSocketIpcHandlers() {
                                         pairWithUID
                                     }));
                                 } else {
+                                    console.log('Requesting new connection');
                                     wsClient.send(JSON.stringify({
                                         type: 'new-connection'
                                     }));
@@ -161,11 +163,23 @@ function setupWebSocketIpcHandlers() {
                                 savedConnectionInfo.uid = message.uid;
                                 reconnectAttempts = 0; // Reset on successful connection
                                 sendToRenderer('ws-connected', message);
+                                
+                                // Resolve promise on successful connection
+                                if (!isResolved) {
+                                    isResolved = true;
+                                    resolve({ success: true });
+                                }
                             } else if (message.type === 'reconnected') {
                                 savedConnectionInfo.uid = message.uid;
                                 reconnectAttempts = 0; // Reset on successful reconnection
                                 console.log('Successfully reconnected with UID:', message.uid);
                                 sendToRenderer('ws-reconnected', message);
+                                
+                                // Resolve promise on successful reconnection
+                                if (!isResolved) {
+                                    isResolved = true;
+                                    resolve({ success: true });
+                                }
                             } else if (message.type === 'role-set') {
                                 sendToRenderer('ws-role-set', message);
                             } else if (message.type === 'paired') {
@@ -200,8 +214,8 @@ function setupWebSocketIpcHandlers() {
                 });
 
                 wsClient.on('open', () => {
-                    console.log('WebSocket client connected');
-                    resolve({ success: true });
+                    console.log('WebSocket client opened, waiting for connection-ready...');
+                    // Don't resolve here - wait for 'connected' or 'reconnected' message
                 });
 
                 wsClient.on('error', (error) => {
@@ -209,11 +223,25 @@ function setupWebSocketIpcHandlers() {
                     sendToRenderer('ws-error', { error: error.message });
                     
                     // If error occurs before connection is established, reject the promise
-                    if (wsClient && wsClient.readyState === WebSocket.CONNECTING) {
+                    if (!isResolved) {
+                        isResolved = true;
                         wsClient = null;
                         resolve({ success: false, error: error.message });
                     }
                 });
+                
+                // Timeout after 10 seconds if no response
+                setTimeout(() => {
+                    if (!isResolved) {
+                        isResolved = true;
+                        console.error('Connection timeout - no response from server');
+                        if (wsClient) {
+                            wsClient.close();
+                            wsClient = null;
+                        }
+                        resolve({ success: false, error: 'Connection timeout' });
+                    }
+                }, 10000);
             });
         } catch (error) {
             console.error('Error connecting to WebSocket:', error);
