@@ -15,6 +15,13 @@ const WS_PORT = parseInt(process.env.WS_PORT) || 8080;
 // Store for connected clients
 const clients = new Map();
 
+// Store sessions for reconnection
+// sessions: Map<uid, { role, pairedWith, lastSeen, clientId }>
+const sessions = new Map();
+
+// Session expiry time (30 minutes)
+const SESSION_EXPIRY = 30 * 60 * 1000;
+
 // Simple UUID v4 generator
 function generateUUID() {
     return crypto.randomUUID();
