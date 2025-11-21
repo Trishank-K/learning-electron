@@ -154,6 +154,14 @@ export class CheatingDaddyApp extends LitElement {
     connectedCallback() {
         super.connectedCallback();
 
+        // Wait for cheddar to be ready if not already available
+        if (!window.cheddar) {
+            console.log('Waiting for cheddar to be ready...');
+            window.addEventListener('cheddar-ready', () => {
+                console.log('Cheddar is now ready!');
+            }, { once: true });
+        }
+
         // Set up IPC listeners if needed
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
@@ -522,6 +530,13 @@ export class CheatingDaddyApp extends LitElement {
     async handleToggleAudioSharing() {
         if (!window.cheddar) {
             console.error('Cheddar not available');
+            this.setStatus('Error: Cheddar not available');
+            return;
+        }
+
+        if (typeof window.cheddar.enableAudioSharing !== 'function' || typeof window.cheddar.disableAudioSharing !== 'function') {
+            console.error('Audio sharing functions not available');
+            this.setStatus('Error: Audio sharing functions not available. Please reload the app.');
             return;
         }
 

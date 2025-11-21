@@ -1,5 +1,13 @@
 // renderer.js
-const { ipcRenderer } = require('electron');
+console.log('renderer.js: Starting to load...');
+
+try {
+    var { ipcRenderer } = require('electron');
+    console.log('renderer.js: ipcRenderer loaded successfully');
+} catch (error) {
+    console.error('renderer.js: Failed to load ipcRenderer:', error);
+    throw error;
+}
 
 // Initialize random display name for UI components
 window.randomDisplayName = null;
@@ -942,4 +950,18 @@ const cheddar = {
 };
 
 // Make it globally available
+console.log('renderer.js: Creating window.cheddar object...');
 window.cheddar = cheddar;
+console.log('renderer.js: window.cheddar created successfully');
+
+// Dispatch ready event
+window.dispatchEvent(new CustomEvent('cheddar-ready'));
+console.log('renderer.js: cheddar-ready event dispatched');
+
+// Debug: Log available functions
+console.log('Cheddar object initialized with audio functions:', {
+    hasEnableAudioSharing: typeof cheddar.enableAudioSharing === 'function',
+    hasDisableAudioSharing: typeof cheddar.disableAudioSharing === 'function',
+    audioSharingEnabled: audioSharingEnabled,
+    allFunctions: Object.keys(cheddar)
+});
