@@ -182,6 +182,55 @@ export class HelperView extends LitElement {
             color: var(--description-color);
             margin-bottom: 16px;
         }
+
+        .audio-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .audio-toggle-btn {
+            background: var(--button-background);
+            color: var(--text-color);
+            border: 1px solid var(--button-border);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+        }
+
+        .audio-toggle-btn:hover {
+            background: var(--button-hover-background);
+            border-color: var(--button-hover-border);
+        }
+
+        .audio-toggle-btn.active {
+            background: var(--start-button-background);
+            color: var(--start-button-color);
+            border-color: var(--start-button-border);
+        }
+
+        .audio-indicator {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #ff4444;
+        }
+
+        .audio-indicator.active {
+            background: #4caf50;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
     `;
 
     static properties = {
@@ -190,6 +239,8 @@ export class HelperView extends LitElement {
         myUID: { type: String },
         questions: { type: Array },
         onSendAnswer: { type: Function },
+        audioSharingEnabled: { type: Boolean },
+        onToggleAudioSharing: { type: Function },
     };
 
     constructor() {
@@ -199,6 +250,8 @@ export class HelperView extends LitElement {
         this.myUID = '';
         this.questions = [];
         this.onSendAnswer = () => {};
+        this.audioSharingEnabled = false;
+        this.onToggleAudioSharing = () => {};
     }
 
     async handleSendAnswer() {
@@ -257,7 +310,18 @@ export class HelperView extends LitElement {
                         <div class="status-dot ${this.connected ? '' : 'disconnected'}"></div>
                         <span class="status-text">${statusText}</span>
                     </div>
-                    ${this.myUID ? html`<span class="uid-display">Your UID: ${this.myUID}</span>` : ''}
+                    <div class="audio-controls">
+                        <button
+                            class="audio-toggle-btn ${this.audioSharingEnabled ? 'active' : ''}"
+                            @click=${this.onToggleAudioSharing}
+                            ?disabled=${!this.connected || !this.pairedUID}
+                            title="${!this.connected || !this.pairedUID ? 'Connect and pair with asker first' : this.audioSharingEnabled ? 'Stop audio sharing with asker' : 'Share your mic audio with asker'}"
+                        >
+                            <div class="audio-indicator ${this.audioSharingEnabled ? 'active' : ''}"></div>
+                            ${this.audioSharingEnabled ? '🎤 Audio ON' : '🎤 Audio OFF'}
+                        </button>
+                        ${this.myUID ? html`<span class="uid-display">Your UID: ${this.myUID}</span>` : ''}
+                    </div>
                 </div>
 
                 <div class="questions-container">

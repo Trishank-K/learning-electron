@@ -210,6 +210,12 @@ function setupWebSocketIpcHandlers() {
                             sendToRenderer('ws-partner-reconnected', message);
                         } else if (message.type === 'error') {
                             sendToRenderer('ws-error', message);
+                        } else if (message.type === 'audio-received') {
+                            sendToRenderer('ws-audio-received', message);
+                        } else if (message.type === 'audio-started') {
+                            sendToRenderer('ws-audio-started', message);
+                        } else if (message.type === 'audio-stopped') {
+                            sendToRenderer('ws-audio-stopped', message);
                         }
                     } catch (error) {
                         console.error('Error parsing WebSocket message:', error);
@@ -530,6 +536,70 @@ function setupWebSocketIpcHandlers() {
             return { success: true };
         } catch (error) {
             console.error('Error disconnecting from WebSocket:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Send audio stream (mic or system)
+    ipcMain.handle('ws-send-audio-stream', async (event, audioType, data) => {
+        try {
+            if (!wsClient || wsClient.readyState !== WebSocket.OPEN) {
+                return { success: false, error: 'Not connected to WebSocket server' };
+            }
+
+            wsClient.send(
+                JSON.stringify({
+                    type: 'audio-stream',
+                    audioType: audioType, // 'mic' or 'system'
+                    data: data,
+                })
+            );
+
+            return { success: true };
+        } catch (error) {
+            console.error('Error sending audio stream:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Start audio streaming
+    ipcMain.handle('ws-start-audio', async (event, audioType) => {
+        try {
+            if (!wsClient || wsClient.readyState !== WebSocket.OPEN) {
+                return { success: false, error: 'Not connected to WebSocket server' };
+            }
+
+            wsClient.send(
+                JSON.stringify({
+                    type: 'start-audio',
+                    audioType: audioType,
+                })
+            );
+
+            return { success: true };
+        } catch (error) {
+            console.error('Error starting audio:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Stop audio streaming
+    ipcMain.handle('ws-stop-audio', async (event, audioType) => {
+        try {
+            if (!wsClient || wsClient.readyState !== WebSocket.OPEN) {
+                return { success: false, error: 'Not connected to WebSocket server' };
+            }
+
+            wsClient.send(
+                JSON.stringify({
+                    type: 'stop-audio',
+                    audioType: audioType,
+                })
+            );
+
+            return { success: true };
+        } catch (error) {
+            console.error('Error stopping audio:', error);
             return { success: false, error: error.message };
         }
     });

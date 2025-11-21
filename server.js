@@ -133,6 +133,18 @@ function handleClientMessage(clientId, message) {
             client.ws.send(JSON.stringify({ type: 'pong' }));
             break;
 
+        case 'audio-stream':
+            handleAudioStream(clientId, message.audioType, message.data);
+            break;
+
+        case 'start-audio':
+            handleStartAudio(clientId, message.audioType);
+            break;
+
+        case 'stop-audio':
+            handleStopAudio(clientId, message.audioType);
+            break;
+
         default:
             console.log(`  → Unknown message type: ${message.type}`);
     }
@@ -350,6 +362,68 @@ function handleSendAnswer(clientId, answer) {
             error: 'No asker paired',
         }));
         console.log(`  → ✗ No asker paired for helper ${client.uid}`);
+    }
+}
+
+function handleAudioStream(clientId, audioType, data) {
+    const client = clients.get(clientId);
+    if (!client) return;
+
+    // Find paired partner
+    const partner = Array.from(clients.values()).find(
+        c => c.uid === client.pairedWith
+    );
+
+    if (partner) {
+        // Forward audio stream to partner
+        partner.ws.send(JSON.stringify({
+            type: 'audio-received',
+            audioType: audioType, // 'mic' or 'system'
+            data: data,
+            from: client.uid
+        }));
+    }
+}
+
+function handleStartAudio(clientId, audioType) {
+    const client = clients.get(clientId);
+    if (!client) return;
+
+    console.log(`  → ${client.uid} started ${audioType} audio`);
+
+    // Notify paired partner
+    const partner = Array.from(clients.values()).find(
+        c => c.uid === client.pairedWith
+    );
+
+    if (partner) {
+        partner.ws.send(JSON.stringify({
+            type: 'audio-started',
+            audioType: audioType,
+            from: client.uid
+        }));
+        console.log(`  → Notified ${partner.uid} that ${client.uid} started ${audioType} audio`);
+    }
+}
+
+function handleStopAudio(clientId, audioType) {
+    const client = clients.get(clientId);
+    if (!client) return;
+
+    console.log(`  → ${client.uid} stopped ${audioType} audio`);
+
+    // Notify paired partner
+    const partner = Array.from(clients.values()).find(
+        c => c.uid === client.pairedWith
+    );
+
+    if (partner) {
+        partner.ws.send(JSON.stringify({
+            type: 'audio-stopped',
+            audioType: audioType,
+            from: client.uid
+        }));
+        console.log(`  → Notified ${partner.uid} that ${client.uid} stopped ${audioType} audio`);
     }
 }
 

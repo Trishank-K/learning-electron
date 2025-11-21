@@ -298,6 +298,9 @@ export class AssistantView extends LitElement {
         onSendText: { type: Function },
         shouldAnimateResponse: { type: Boolean },
         savedResponses: { type: Array },
+        audioSharingEnabled: { type: Boolean },
+        onToggleAudioSharing: { type: Function },
+        connected: { type: Boolean },
     };
 
     constructor() {
@@ -307,6 +310,9 @@ export class AssistantView extends LitElement {
         this.selectedProfile = 'interview';
         this.onSendText = () => {};
         this._lastAnimatedWordCount = 0;
+        this.audioSharingEnabled = false;
+        this.onToggleAudioSharing = () => {};
+        this.connected = false;
         // Load saved responses from localStorage
         try {
             this.savedResponses = JSON.parse(localStorage.getItem('savedResponses') || '[]');
@@ -615,6 +621,16 @@ export class AssistantView extends LitElement {
             <div class="response-container" id="responseContainer"></div>
 
             <div class="text-input-container">
+                <button
+                    class="audio-toggle-btn ${this.audioSharingEnabled ? 'active' : ''}"
+                    @click=${this.onToggleAudioSharing}
+                    ?disabled=${!this.connected}
+                    title="${!this.connected ? 'Connect and pair first' : this.audioSharingEnabled ? 'Stop audio sharing with helper' : 'Share your audio with helper (mic + system audio)'}"
+                >
+                    <div class="audio-indicator ${this.audioSharingEnabled ? 'active' : ''}"></div>
+                    🎤
+                </button>
+
                 <button class="nav-button" @click=${this.navigateToPreviousResponse} ?disabled=${this.currentResponseIndex <= 0}>
                     <?xml version="1.0" encoding="UTF-8"?><svg
                         width="24px"

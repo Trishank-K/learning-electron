@@ -145,6 +145,7 @@ export class CheatingDaddyApp extends LitElement {
         this.userRole = '';
         this.userUID = '';
         this.pairedUID = '';
+        this.audioSharingEnabled = false;
 
         // Apply layout mode to document root
         this.updateLayoutMode();
@@ -518,6 +519,40 @@ export class CheatingDaddyApp extends LitElement {
         }
     }
 
+    async handleToggleAudioSharing() {
+        if (!window.cheddar) {
+            console.error('Cheddar not available');
+            return;
+        }
+
+        try {
+            if (this.audioSharingEnabled) {
+                // Disable audio sharing
+                const result = await window.cheddar.disableAudioSharing();
+                if (result.success) {
+                    this.audioSharingEnabled = false;
+                    this.setStatus('Audio sharing disabled');
+                    console.log('Audio sharing disabled successfully');
+                }
+            } else {
+                // Enable audio sharing
+                const result = await window.cheddar.enableAudioSharing();
+                if (result.success) {
+                    this.audioSharingEnabled = true;
+                    this.setStatus('Audio sharing enabled - streaming mic and system audio');
+                    console.log('Audio sharing enabled successfully');
+                } else {
+                    this.setStatus(result.error || 'Failed to enable audio sharing');
+                    console.error('Failed to enable audio sharing:', result.error);
+                }
+            }
+            this.requestUpdate();
+        } catch (error) {
+            console.error('Error toggling audio sharing:', error);
+            this.setStatus('Error toggling audio sharing: ' + error.message);
+        }
+    }
+
     handleResponseIndexChanged(e) {
         this.currentResponseIndex = e.detail.index;
         this.shouldAnimateResponse = false;
@@ -622,6 +657,9 @@ export class CheatingDaddyApp extends LitElement {
                         .selectedProfile=${this.selectedProfile}
                         .onSendText=${message => this.handleSendText(message)}
                         .shouldAnimateResponse=${this.shouldAnimateResponse}
+                        .audioSharingEnabled=${this.audioSharingEnabled}
+                        .onToggleAudioSharing=${() => this.handleToggleAudioSharing()}
+                        .connected=${this.wsConnected && this.pairedUID}
                         @response-index-changed=${this.handleResponseIndexChanged}
                         @response-animation-complete=${() => {
                             this.shouldAnimateResponse = false;
@@ -639,6 +677,8 @@ export class CheatingDaddyApp extends LitElement {
                         .pairedUID=${this.pairedUID}
                         .myUID=${this.userUID}
                         .onSendAnswer=${answer => this.handleSendAnswer(answer)}
+                        .audioSharingEnabled=${this.audioSharingEnabled}
+                        .onToggleAudioSharing=${() => this.handleToggleAudioSharing()}
                     ></helper-view>
                 `;
 

@@ -34,6 +34,12 @@ let currentImageQuality = 'medium'; // Store current image quality for manual sc
 const isLinux = process.platform === 'linux';
 const isMacOS = process.platform === 'darwin';
 
+// Audio sharing state
+let audioSharingEnabled = false;
+let remoteAudioContext = null;
+let remoteAudioBuffers = { mic: [], system: [] };
+let remoteAudioSources = { mic: null, system: null };
+
 // Token tracking system for rate limiting
 let tokenTracker = {
     tokens: [], // Array of {timestamp, count, type} objects
@@ -374,10 +380,16 @@ function setupLinuxMicProcessing(micStream) {
             const pcmData16 = convertFloat32ToInt16(chunk);
             const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
+            // Send to Gemini (if enabled)
             await ipcRenderer.invoke('send-mic-audio-content', {
                 data: base64Data,
                 mimeType: 'audio/pcm;rate=24000',
             });
+
+            // Send to WebSocket partner (if audio sharing enabled)
+            if (audioSharingEnabled) {
+                await ipcRenderer.invoke('ws-send-audio-stream', 'mic', base64Data);
+            }
         }
     };
 
@@ -407,10 +419,16 @@ function setupLinuxSystemAudioProcessing() {
             const pcmData16 = convertFloat32ToInt16(chunk);
             const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
+            // Send to Gemini (if enabled)
             await ipcRenderer.invoke('send-audio-content', {
                 data: base64Data,
                 mimeType: 'audio/pcm;rate=24000',
             });
+
+            // Send to WebSocket partner (if audio sharing enabled)
+            if (audioSharingEnabled) {
+                await ipcRenderer.invoke('ws-send-audio-stream', 'system', base64Data);
+            }
         }
     };
 
@@ -437,10 +455,16 @@ function setupWindowsLoopbackProcessing() {
             const pcmData16 = convertFloat32ToInt16(chunk);
             const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
+            // Send to Gemini (if enabled)
             await ipcRenderer.invoke('send-audio-content', {
                 data: base64Data,
                 mimeType: 'audio/pcm;rate=24000',
             });
+
+            // Send to WebSocket partner (if audio sharing enabled)
+            if (audioSharingEnabled) {
+                await ipcRenderer.invoke('ws-send-audio-stream', 'system', base64Data);
+            }
         }
     };
 
@@ -598,6 +622,11 @@ function stopCapture() {
         });
     }
 
+    // Stop audio sharing if enabled
+    if (audioSharingEnabled) {
+        await disableAudioSharing();
+    }
+
     // Clean up hidden elements
     if (hiddenVideo) {
         hiddenVideo.pause();
@@ -748,6 +777,128 @@ function handleShortcut(shortcutKey) {
 // Create reference to the main app element
 const cheatingDaddyApp = document.querySelector('cheating-daddy-app');
 
+// Audio sharing functions
+function base64ToArrayBuffer(base64) {
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+}
+
+function int16ToFloat32(int16Array) {
+    const float32Array = new Float32Array(int16Array.length);
+    for (let i = 0; i < int16Array.length; i++) {
+        const int16 = int16Array[i];
+        float32Array[i] = int16 < 0 ? int16 / 0x8000 : int16 / 0x7fff;
+    }
+    return float32Array;
+}
+
+async function playRemoteAudio(audioType, base64Data) {
+    if (!remoteAudioContext) {
+        remoteAudioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+    }
+
+    try {
+        // Decode base64 to ArrayBuffer
+        const arrayBuffer = base64ToArrayBuffer(base64Data);
+        const int16Array = new Int16Array(arrayBuffer);
+        const float32Array = int16ToFloat32(int16Array);
+
+        // Create AudioBuffer
+        const audioBuffer = remoteAudioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
+        audioBuffer.getChannelData(0).set(float32Array);
+
+        // Create source and play
+        const source = remoteAudioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(remoteAudioContext.destination);
+        source.start();
+
+        console.log(`Playing ${audioType} audio from partner (${int16Array.length} samples)`);
+    } catch (error) {
+        console.error(`Error playing ${audioType} audio:`, error);
+    }
+}
+
+async function enableAudioSharing() {
+    if (audioSharingEnabled) {
+        console.log('Audio sharing already enabled');
+        return { success: true };
+    }
+
+    // Check if audio capture is active
+    if (!audioProcessor && !micAudioProcessor) {
+        console.warn('No audio capture active. Start screen/audio capture first.');
+        return { success: false, error: 'No audio capture active. Please start capture first.' };
+    }
+
+    audioSharingEnabled = true;
+    console.log('Audio sharing enabled');
+
+    // Notify partner that audio streaming started
+    if (audioProcessor) {
+        const result = await ipcRenderer.invoke('ws-start-audio', 'system');
+        console.log('System audio streaming started:', result);
+    }
+    if (micAudioProcessor) {
+        const result = await ipcRenderer.invoke('ws-start-audio', 'mic');
+        console.log('Mic audio streaming started:', result);
+    }
+
+    return { success: true };
+}
+
+async function disableAudioSharing() {
+    if (!audioSharingEnabled) {
+        console.log('Audio sharing already disabled');
+        return { success: true };
+    }
+
+    audioSharingEnabled = false;
+    console.log('Audio sharing disabled');
+
+    // Notify partner that audio streaming stopped
+    try {
+        await ipcRenderer.invoke('ws-stop-audio', 'system');
+        await ipcRenderer.invoke('ws-stop-audio', 'mic');
+    } catch (error) {
+        console.error('Error stopping audio streams:', error);
+    }
+
+    // Clean up audio context
+    if (remoteAudioContext) {
+        await remoteAudioContext.close();
+        remoteAudioContext = null;
+    }
+
+    return { success: true };
+}
+
+// Listen for incoming audio from partner
+ipcRenderer.on('ws-audio-received', (event, message) => {
+    console.log(`Received ${message.audioType} audio from partner`);
+    if (message.data) {
+        playRemoteAudio(message.audioType, message.data);
+    }
+});
+
+ipcRenderer.on('ws-audio-started', (event, message) => {
+    console.log(`Partner started ${message.audioType} audio streaming`);
+    if (cheatingDaddyApp) {
+        cheatingDaddyApp.setStatus(`Partner started ${message.audioType} audio`);
+    }
+});
+
+ipcRenderer.on('ws-audio-stopped', (event, message) => {
+    console.log(`Partner stopped ${message.audioType} audio streaming`);
+    if (cheatingDaddyApp) {
+        cheatingDaddyApp.setStatus(`Partner stopped ${message.audioType} audio`);
+    }
+});
+
 // Consolidated cheddar object - all functions in one place
 const cheddar = {
     // Element access
@@ -768,6 +919,11 @@ const cheddar = {
     stopCapture,
     sendTextMessage,
     handleShortcut,
+
+    // Audio sharing functions
+    enableAudioSharing,
+    disableAudioSharing,
+    isAudioSharingEnabled: () => audioSharingEnabled,
 
     // Conversation history functions
     getAllConversationSessions,
