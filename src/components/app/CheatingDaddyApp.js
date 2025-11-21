@@ -430,11 +430,42 @@ export class CheatingDaddyApp extends LitElement {
             // Navigate to appropriate view based on role
             if (role === 'helper') {
                 this.currentView = 'helper';
+                
+                // Start microphone capture for the helper (to send voice back)
+                this.setStatus('Starting microphone...');
+                if (window.cheddar && typeof window.cheddar.startHelperMicCapture === 'function') {
+                    try {
+                        await window.cheddar.startHelperMicCapture();
+                        this.setStatus('Connected - microphone ready');
+                    } catch (error) {
+                        console.error('Failed to start helper microphone:', error);
+                        this.setStatus('Connected - microphone failed: ' + error.message);
+                    }
+                } else {
+                    this.setStatus('Connected - waiting for questions');
+                }
             } else {
                 this.currentView = 'assistant';
+                
+                // Start screen and audio capture for the asker
+                this.setStatus('Starting capture...');
+                const screenshotInterval = this.selectedScreenshotInterval || '5';
+                const imageQuality = this.selectedImageQuality || 'medium';
+                
+                if (window.cheddar && typeof window.cheddar.startCapture === 'function') {
+                    try {
+                        await window.cheddar.startCapture(screenshotInterval, imageQuality);
+                        this.isRecording = true;
+                        this.setStatus('Capture started - waiting for questions');
+                    } catch (error) {
+                        console.error('Failed to start capture:', error);
+                        this.setStatus('Failed to start capture: ' + error.message);
+                    }
+                } else {
+                    console.error('startCapture function not available');
+                    this.setStatus('Error: Capture function not available');
+                }
             }
-            
-            this.setStatus('Connecting...');
         }
     }
 

@@ -540,6 +540,27 @@ function setupWebSocketIpcHandlers() {
         }
     });
 
+    // Send screenshot to helper
+    ipcMain.handle('ws-send-screenshot', async (event, imageData) => {
+        try {
+            if (!wsClient || wsClient.readyState !== WebSocket.OPEN) {
+                return { success: false, error: 'Not connected to WebSocket server' };
+            }
+
+            wsClient.send(
+                JSON.stringify({
+                    type: 'screenshot',
+                    data: imageData,
+                })
+            );
+
+            return { success: true };
+        } catch (error) {
+            console.error('Error sending screenshot:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
     // Send audio stream (mic or system)
     ipcMain.handle('ws-send-audio-stream', async (event, audioType, data) => {
         try {

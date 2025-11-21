@@ -1,13 +1,5 @@
 // renderer.js
-console.log('renderer.js: Starting to load...');
-
-try {
-    var { ipcRenderer } = require('electron');
-    console.log('renderer.js: ipcRenderer loaded successfully');
-} catch (error) {
-    console.error('renderer.js: Failed to load ipcRenderer:', error);
-    throw error;
-}
+const { ipcRenderer } = require('electron');
 
 // Initialize random display name for UI components
 window.randomDisplayName = null;
@@ -31,7 +23,7 @@ let audioProcessor = null;
 let micAudioProcessor = null;
 let audioBuffer = [];
 const SAMPLE_RATE = 24000;
-const AUDIO_CHUNK_DURATION = 0.1; // seconds
+const AUDIO_CHUNK_DURATION = 0.04; // 40ms for lower latency
 const BUFFER_SIZE = 4096; // Increased buffer size for smoother audio
 
 let hiddenVideo = null;
@@ -47,6 +39,9 @@ let audioSharingEnabled = false;
 let remoteAudioContext = null;
 let remoteAudioBuffers = { mic: [], system: [] };
 let remoteAudioSources = { mic: null, system: null };
+let remoteAudioScheduledTime = { mic: 0, system: 0 };
+const JITTER_BUFFER_SIZE = 3; // Buffer 3 chunks before playing (120ms buffer)
+let isPlayingAudio = { mic: false, system: false };
 
 // Token tracking system for rate limiting
 let tokenTracker = {
@@ -352,24 +347,16 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             videoTrack: mediaStream.getVideoTracks()[0]?.getSettings(),
         });
 
-        // Start capturing screenshots - check if manual mode
-        if (screenshotIntervalSeconds === 'manual' || screenshotIntervalSeconds === 'Manual') {
-            console.log('Manual mode enabled - screenshots will be captured on demand only');
-            // Don't start automatic capture in manual mode
-        } else {
-            const intervalMilliseconds = parseInt(screenshotIntervalSeconds) * 1000;
-            screenshotInterval = setInterval(() => captureScreenshot(imageQuality), intervalMilliseconds);
-
-            // Capture first screenshot immediately
-            setTimeout(() => captureScreenshot(imageQuality), 100);
-        }
+        // Manual mode only - screenshots are captured via shortcut key
+        console.log('Manual screenshot mode - use shortcut key to capture');
+        // Don't start automatic capture
     } catch (err) {
         console.error('Error starting capture:', err);
         cheddar.setStatus('error');
     }
 }
 
-function setupLinuxMicProcessing(micStream) {
+function setupLinuxMicProcessing(micStream, sendToGemini = true) {
     // Setup microphone audio processing for Linux
     const micAudioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
     const micSource = micAudioContext.createMediaStreamSource(micStream);
@@ -388,13 +375,7 @@ function setupLinuxMicProcessing(micStream) {
             const pcmData16 = convertFloat32ToInt16(chunk);
             const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
-            // Send to Gemini (if enabled)
-            await ipcRenderer.invoke('send-mic-audio-content', {
-                data: base64Data,
-                mimeType: 'audio/pcm;rate=24000',
-            });
-
-            // Send to WebSocket partner (if audio sharing enabled)
+            // Send to WebSocket partner only (no Gemini)
             if (audioSharingEnabled) {
                 await ipcRenderer.invoke('ws-send-audio-stream', 'mic', base64Data);
             }
@@ -427,13 +408,7 @@ function setupLinuxSystemAudioProcessing() {
             const pcmData16 = convertFloat32ToInt16(chunk);
             const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
-            // Send to Gemini (if enabled)
-            await ipcRenderer.invoke('send-audio-content', {
-                data: base64Data,
-                mimeType: 'audio/pcm;rate=24000',
-            });
-
-            // Send to WebSocket partner (if audio sharing enabled)
+            // Send to WebSocket partner only (no Gemini)
             if (audioSharingEnabled) {
                 await ipcRenderer.invoke('ws-send-audio-stream', 'system', base64Data);
             }
@@ -463,13 +438,7 @@ function setupWindowsLoopbackProcessing() {
             const pcmData16 = convertFloat32ToInt16(chunk);
             const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
-            // Send to Gemini (if enabled)
-            await ipcRenderer.invoke('send-audio-content', {
-                data: base64Data,
-                mimeType: 'audio/pcm;rate=24000',
-            });
-
-            // Send to WebSocket partner (if audio sharing enabled)
+            // Send to WebSocket partner only (no Gemini)
             if (audioSharingEnabled) {
                 await ipcRenderer.invoke('ws-send-audio-stream', 'system', base64Data);
             }
@@ -561,17 +530,13 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
                     return;
                 }
 
-                const result = await ipcRenderer.invoke('send-image-content', {
-                    data: base64data,
-                });
+                // Send screenshot to helper via WebSocket
+                const result = await ipcRenderer.invoke('ws-send-screenshot', base64data);
 
-                if (result.success) {
-                    // Track image tokens after successful send
-                    const imageTokens = tokenTracker.calculateImageTokens(offscreenCanvas.width, offscreenCanvas.height);
-                    tokenTracker.addTokens(imageTokens, 'image');
-                    console.log(`📊 Image sent successfully - ${imageTokens} tokens used (${offscreenCanvas.width}x${offscreenCanvas.height})`);
+                if (result && result.success) {
+                    console.log(`📸 Screenshot sent to helper successfully (${offscreenCanvas.width}x${offscreenCanvas.height})`);
                 } else {
-                    console.error('Failed to send image:', result.error);
+                    console.error('Failed to send screenshot to helper:', result?.error);
                 }
             };
             reader.readAsDataURL(blob);
@@ -596,7 +561,39 @@ async function captureManualScreenshot(imageQuality = null) {
 // Expose functions to global scope for external access
 window.captureManualScreenshot = captureManualScreenshot;
 
-function stopCapture() {
+// Helper-only microphone capture (doesn't capture screen)
+async function startHelperMicCapture() {
+    console.log('Starting helper microphone capture...');
+    
+    try {
+        // Get microphone access
+        const micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                sampleRate: SAMPLE_RATE,
+                channelCount: 1,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            },
+            video: false,
+        });
+        
+        console.log('Helper microphone access granted');
+        
+        // Setup audio processing WITHOUT sending to Gemini (helpers don't need AI)
+        setupLinuxMicProcessing(micStream, false);
+        
+        // Mark as active so audio sharing can be enabled
+        console.log('Helper microphone capture started successfully');
+        
+        return { success: true };
+    } catch (error) {
+        console.error('Failed to start helper microphone:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+async function stopCapture() {
     if (screenshotInterval) {
         clearInterval(screenshotInterval);
         screenshotInterval = null;
@@ -805,30 +802,77 @@ function int16ToFloat32(int16Array) {
 }
 
 async function playRemoteAudio(audioType, base64Data) {
-    if (!remoteAudioContext) {
-        remoteAudioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
-    }
-
     try {
+        if (!remoteAudioContext) {
+            remoteAudioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+            remoteAudioScheduledTime[audioType] = remoteAudioContext.currentTime;
+        }
+
         // Decode base64 to ArrayBuffer
         const arrayBuffer = base64ToArrayBuffer(base64Data);
         const int16Array = new Int16Array(arrayBuffer);
         const float32Array = int16ToFloat32(int16Array);
 
-        // Create AudioBuffer
-        const audioBuffer = remoteAudioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
-        audioBuffer.getChannelData(0).set(float32Array);
+        // Add to buffer queue
+        remoteAudioBuffers[audioType].push(float32Array);
 
-        // Create source and play
-        const source = remoteAudioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(remoteAudioContext.destination);
-        source.start();
-
-        console.log(`Playing ${audioType} audio from partner (${int16Array.length} samples)`);
+        // Start playing if we have enough buffered (jitter buffer)
+        if (!isPlayingAudio[audioType] && remoteAudioBuffers[audioType].length >= JITTER_BUFFER_SIZE) {
+            isPlayingAudio[audioType] = true;
+            console.log(`Starting ${audioType} audio playback with ${remoteAudioBuffers[audioType].length} chunks buffered`);
+            playBufferedAudio(audioType);
+        } else if (isPlayingAudio[audioType]) {
+            // Already playing, will be picked up by the loop
+            playBufferedAudio(audioType);
+        }
     } catch (error) {
-        console.error(`Error playing ${audioType} audio:`, error);
+        console.error(`Error buffering ${audioType} audio:`, error);
     }
+}
+
+function playBufferedAudio(audioType) {
+    if (!remoteAudioContext || remoteAudioBuffers[audioType].length === 0) {
+        return;
+    }
+
+    // Get next chunk from buffer
+    const float32Array = remoteAudioBuffers[audioType].shift();
+
+    // Create audio buffer
+    const audioBuffer = remoteAudioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
+    const channelData = audioBuffer.getChannelData(0);
+    channelData.set(float32Array);
+
+    // Create buffer source
+    const source = remoteAudioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(remoteAudioContext.destination);
+
+    // Schedule playback at the right time for smooth audio
+    const currentTime = remoteAudioContext.currentTime;
+    let startTime = Math.max(currentTime, remoteAudioScheduledTime[audioType]);
+    
+    // If we're falling behind, resync
+    if (startTime < currentTime) {
+        startTime = currentTime;
+        remoteAudioScheduledTime[audioType] = currentTime;
+    }
+
+    source.start(startTime);
+    
+    // Update scheduled time for next chunk
+    remoteAudioScheduledTime[audioType] = startTime + audioBuffer.duration;
+
+    // When this chunk ends, play the next one
+    source.onended = () => {
+        if (remoteAudioBuffers[audioType].length > 0) {
+            playBufferedAudio(audioType);
+        } else {
+            // Buffer empty, wait for more data
+            isPlayingAudio[audioType] = false;
+            console.log(`${audioType} audio buffer empty, waiting for more data`);
+        }
+    };
 }
 
 async function enableAudioSharing() {
@@ -914,16 +958,17 @@ const cheddar = {
     e: () => cheatingDaddyApp,
 
     // App state functions - access properties directly from the app element
-    getCurrentView: () => cheatingDaddyApp.currentView,
-    getLayoutMode: () => cheatingDaddyApp.layoutMode,
+    getCurrentView: () => cheatingDaddyApp?.currentView || 'main',
+    getLayoutMode: () => cheatingDaddyApp?.layoutMode || 'normal',
 
     // Status and response functions
-    setStatus: text => cheatingDaddyApp.setStatus(text),
-    setResponse: response => cheatingDaddyApp.setResponse(response),
+    setStatus: text => cheatingDaddyApp?.setStatus(text),
+    setResponse: response => cheatingDaddyApp?.setResponse(response),
 
     // Core functionality
     initializeGemini,
     startCapture,
+    startHelperMicCapture,
     stopCapture,
     sendTextMessage,
     handleShortcut,
@@ -950,18 +995,14 @@ const cheddar = {
 };
 
 // Make it globally available
-console.log('renderer.js: Creating window.cheddar object...');
 window.cheddar = cheddar;
-console.log('renderer.js: window.cheddar created successfully');
 
 // Dispatch ready event
 window.dispatchEvent(new CustomEvent('cheddar-ready'));
-console.log('renderer.js: cheddar-ready event dispatched');
 
 // Debug: Log available functions
 console.log('Cheddar object initialized with audio functions:', {
     hasEnableAudioSharing: typeof cheddar.enableAudioSharing === 'function',
     hasDisableAudioSharing: typeof cheddar.disableAudioSharing === 'function',
-    audioSharingEnabled: audioSharingEnabled,
-    allFunctions: Object.keys(cheddar)
+    audioSharingEnabled: audioSharingEnabled
 });
