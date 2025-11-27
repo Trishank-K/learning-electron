@@ -23,8 +23,8 @@ let audioProcessor = null;
 let micAudioProcessor = null;
 let audioBuffer = [];
 const SAMPLE_RATE = 24000;
-const AUDIO_CHUNK_DURATION = 0.04; // 40ms for lower latency
-const BUFFER_SIZE = 4096; // Increased buffer size for smoother audio
+const AUDIO_CHUNK_DURATION = 0.02; // 20ms for real-time feel
+const BUFFER_SIZE = 2048; // Reduced buffer size for lower latency
 
 let hiddenVideo = null;
 let offscreenCanvas = null;
@@ -40,8 +40,11 @@ let remoteAudioContext = null;
 let remoteAudioBuffers = { mic: [], system: [] };
 let remoteAudioSources = { mic: null, system: null };
 let remoteAudioScheduledTime = { mic: 0, system: 0 };
-const JITTER_BUFFER_SIZE = 3; // Buffer 3 chunks before playing (120ms buffer)
+const MIN_JITTER_BUFFER_SIZE = 2; // Minimum 2 chunks (40ms)
+const MAX_JITTER_BUFFER_SIZE = 8; // Maximum 8 chunks (160ms)
+let adaptiveJitterSize = { mic: MIN_JITTER_BUFFER_SIZE, system: MIN_JITTER_BUFFER_SIZE };
 let isPlayingAudio = { mic: false, system: false };
+let audioStats = { mic: { underruns: 0, lastUnderrun: 0 }, system: { underruns: 0, lastUnderrun: 0 } };
 
 // Token tracking system for rate limiting
 let tokenTracker = {
@@ -365,7 +368,7 @@ function setupLinuxMicProcessing(micStream, sendToGemini = true) {
     let audioBuffer = [];
     const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
 
-    micProcessor.onaudioprocess = async e => {
+    micProcessor.onaudioprocess = e => {
         const inputData = e.inputBuffer.getChannelData(0);
         audioBuffer.push(...inputData);
 
@@ -373,11 +376,13 @@ function setupLinuxMicProcessing(micStream, sendToGemini = true) {
         while (audioBuffer.length >= samplesPerChunk) {
             const chunk = audioBuffer.splice(0, samplesPerChunk);
             const pcmData16 = convertFloat32ToInt16(chunk);
-            const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
-            // Send to WebSocket partner only (no Gemini)
+            // Send to WebSocket partner only (no Gemini) - use binary
             if (audioSharingEnabled) {
-                await ipcRenderer.invoke('ws-send-audio-stream', 'mic', base64Data);
+                // Non-blocking send
+                ipcRenderer.invoke('ws-send-audio-binary', 'mic', pcmData16.buffer).catch(err => {
+                    console.error('Failed to send mic audio:', err);
+                });
             }
         }
     };
@@ -398,7 +403,7 @@ function setupLinuxSystemAudioProcessing() {
     let audioBuffer = [];
     const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
 
-    audioProcessor.onaudioprocess = async e => {
+    audioProcessor.onaudioprocess = e => {
         const inputData = e.inputBuffer.getChannelData(0);
         audioBuffer.push(...inputData);
 
@@ -406,11 +411,13 @@ function setupLinuxSystemAudioProcessing() {
         while (audioBuffer.length >= samplesPerChunk) {
             const chunk = audioBuffer.splice(0, samplesPerChunk);
             const pcmData16 = convertFloat32ToInt16(chunk);
-            const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
-            // Send to WebSocket partner only (no Gemini)
+            // Send to WebSocket partner only (no Gemini) - use binary
             if (audioSharingEnabled) {
-                await ipcRenderer.invoke('ws-send-audio-stream', 'system', base64Data);
+                // Non-blocking send
+                ipcRenderer.invoke('ws-send-audio-binary', 'system', pcmData16.buffer).catch(err => {
+                    console.error('Failed to send system audio:', err);
+                });
             }
         }
     };
@@ -428,7 +435,7 @@ function setupWindowsLoopbackProcessing() {
     let audioBuffer = [];
     const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
 
-    audioProcessor.onaudioprocess = async e => {
+    audioProcessor.onaudioprocess = e => {
         const inputData = e.inputBuffer.getChannelData(0);
         audioBuffer.push(...inputData);
 
@@ -436,11 +443,13 @@ function setupWindowsLoopbackProcessing() {
         while (audioBuffer.length >= samplesPerChunk) {
             const chunk = audioBuffer.splice(0, samplesPerChunk);
             const pcmData16 = convertFloat32ToInt16(chunk);
-            const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
-            // Send to WebSocket partner only (no Gemini)
+            // Send to WebSocket partner only (no Gemini) - use binary
             if (audioSharingEnabled) {
-                await ipcRenderer.invoke('ws-send-audio-stream', 'system', base64Data);
+                // Non-blocking send
+                ipcRenderer.invoke('ws-send-audio-binary', 'system', pcmData16.buffer).catch(err => {
+                    console.error('Failed to send system audio:', err);
+                });
             }
         }
     };
@@ -801,29 +810,38 @@ function int16ToFloat32(int16Array) {
     return float32Array;
 }
 
-async function playRemoteAudio(audioType, base64Data) {
+async function playRemoteAudio(audioType, arrayBuffer) {
     try {
         if (!remoteAudioContext) {
             remoteAudioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
             remoteAudioScheduledTime[audioType] = remoteAudioContext.currentTime;
         }
 
-        // Decode base64 to ArrayBuffer
-        const arrayBuffer = base64ToArrayBuffer(base64Data);
+        // Convert ArrayBuffer directly to Float32Array
         const int16Array = new Int16Array(arrayBuffer);
         const float32Array = int16ToFloat32(int16Array);
 
         // Add to buffer queue
         remoteAudioBuffers[audioType].push(float32Array);
 
-        // Start playing if we have enough buffered (jitter buffer)
-        if (!isPlayingAudio[audioType] && remoteAudioBuffers[audioType].length >= JITTER_BUFFER_SIZE) {
+        // Adaptive jitter buffer - adjust based on underrun history
+        const currentJitterSize = adaptiveJitterSize[audioType];
+        
+        // Start playing if we have enough buffered
+        if (!isPlayingAudio[audioType] && remoteAudioBuffers[audioType].length >= currentJitterSize) {
             isPlayingAudio[audioType] = true;
-            console.log(`Starting ${audioType} audio playback with ${remoteAudioBuffers[audioType].length} chunks buffered`);
+            console.log(`Starting ${audioType} audio playback with ${remoteAudioBuffers[audioType].length} chunks buffered (target: ${currentJitterSize})`);
             playBufferedAudio(audioType);
         } else if (isPlayingAudio[audioType]) {
             // Already playing, will be picked up by the loop
             playBufferedAudio(audioType);
+        }
+        
+        // If buffer is getting too large, skip old chunks to reduce latency
+        if (remoteAudioBuffers[audioType].length > MAX_JITTER_BUFFER_SIZE) {
+            const dropped = remoteAudioBuffers[audioType].length - currentJitterSize;
+            remoteAudioBuffers[audioType].splice(0, dropped);
+            console.warn(`Dropped ${dropped} ${audioType} audio chunks to reduce latency`);
         }
     } catch (error) {
         console.error(`Error buffering ${audioType} audio:`, error);
@@ -852,8 +870,9 @@ function playBufferedAudio(audioType) {
     const currentTime = remoteAudioContext.currentTime;
     let startTime = Math.max(currentTime, remoteAudioScheduledTime[audioType]);
     
-    // If we're falling behind, resync
-    if (startTime < currentTime) {
+    // If we're falling behind significantly (>100ms), resync
+    if (startTime < currentTime - 0.1) {
+        console.warn(`${audioType} audio falling behind, resyncing`);
         startTime = currentTime;
         remoteAudioScheduledTime[audioType] = currentTime;
     }
@@ -868,9 +887,28 @@ function playBufferedAudio(audioType) {
         if (remoteAudioBuffers[audioType].length > 0) {
             playBufferedAudio(audioType);
         } else {
-            // Buffer empty, wait for more data
+            // Buffer underrun detected
             isPlayingAudio[audioType] = false;
-            console.log(`${audioType} audio buffer empty, waiting for more data`);
+            audioStats[audioType].underruns++;
+            audioStats[audioType].lastUnderrun = Date.now();
+            
+            // Adapt jitter buffer size if underruns are frequent
+            const recentUnderruns = audioStats[audioType].underruns;
+            if (recentUnderruns > 0 && Date.now() - audioStats[audioType].lastUnderrun < 5000) {
+                // Increase buffer if we had underruns in last 5 seconds
+                adaptiveJitterSize[audioType] = Math.min(
+                    adaptiveJitterSize[audioType] + 1,
+                    MAX_JITTER_BUFFER_SIZE
+                );
+                console.log(`${audioType} audio buffer empty, increased jitter buffer to ${adaptiveJitterSize[audioType]}`);
+            } else {
+                console.log(`${audioType} audio buffer empty, waiting for more data`);
+            }
+            
+            // Reset stats periodically
+            if (recentUnderruns > 10) {
+                audioStats[audioType].underruns = 0;
+            }
         }
     };
 }
@@ -929,9 +967,8 @@ async function disableAudioSharing() {
     return { success: true };
 }
 
-// Listen for incoming audio from partner
+// Listen for incoming audio from partner (binary)
 ipcRenderer.on('ws-audio-received', (event, message) => {
-    console.log(`Received ${message.audioType} audio from partner`);
     if (message.data) {
         playRemoteAudio(message.audioType, message.data);
     }

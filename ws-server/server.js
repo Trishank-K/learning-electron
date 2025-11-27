@@ -110,10 +110,26 @@ wss.on('connection', (ws) => {
     clientInfo.handshakeTimeout = handshakeTimeout;
 
     ws.on('message', (data) => {
+        // Try to parse as JSON first (most messages are JSON)
         try {
             const message = JSON.parse(data.toString());
             handleClientMessage(clientId, message);
+            return;
         } catch (error) {
+            // Not JSON - check if it's binary audio data
+            if (Buffer.isBuffer(data) && data.length > 1) {
+                // Binary audio protocol: [1 byte: audioType (0 or 1)][remaining: PCM data]
+                const audioTypeByte = data[0];
+                
+                // Validate it's actually audio data (first byte should be 0 or 1)
+                if (audioTypeByte === 0 || audioTypeByte === 1) {
+                    const audioType = audioTypeByte === 1 ? 'mic' : 'system';
+                    handleBinaryAudioStream(clientId, audioType, data);
+                    return;
+                }
+            }
+            
+            // Invalid message format
             console.error(`[${clientId}] Error parsing message:`, error);
             ws.send(JSON.stringify({
                 type: 'error',
@@ -457,13 +473,32 @@ function handleAudioStream(clientId, audioType, data) {
     );
 
     if (partner) {
-        // Forward audio stream to partner
+        // Forward audio stream to partner (LEGACY base64 version)
         partner.ws.send(JSON.stringify({
             type: 'audio-received',
             audioType: audioType, // 'mic' or 'system'
             data: data,
             from: client.uid
         }));
+    }
+}
+
+function handleBinaryAudioStream(clientId, audioType, binaryData) {
+    const client = clients.get(clientId);
+    if (!client) return;
+
+    // Find paired partner
+    const partner = Array.from(clients.values()).find(
+        c => c.uid === client.pairedWith
+    );
+
+    if (partner && partner.ws.readyState === 1) { // 1 = OPEN
+        try {
+            // Forward binary audio directly to partner - no JSON overhead!
+            partner.ws.send(binaryData);
+        } catch (error) {
+            console.error(`Error forwarding binary audio to ${partner.uid}:`, error.message);
+        }
     }
 }
 

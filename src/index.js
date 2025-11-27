@@ -130,6 +130,7 @@ function setupWebSocketIpcHandlers() {
 
                 // Set up message handler BEFORE open event
                 currentConnection.on('message', data => {
+                    // Try to parse as JSON first (most messages are JSON)
                     try {
                         const message = JSON.parse(data.toString());
                         console.log('Received WebSocket message:', message.type);
@@ -218,6 +219,25 @@ function setupWebSocketIpcHandlers() {
                             sendToRenderer('ws-audio-stopped', message);
                         }
                     } catch (error) {
+                        // Not JSON - check if it's binary audio data
+                        if (Buffer.isBuffer(data) && data.length > 1) {
+                            // Binary audio protocol: [1 byte: audioType (0 or 1)][remaining: PCM data]
+                            const audioTypeByte = data[0];
+                            
+                            // Validate it's actually audio data (first byte should be 0 or 1)
+                            if (audioTypeByte === 0 || audioTypeByte === 1) {
+                                const audioType = audioTypeByte === 1 ? 'mic' : 'system';
+                                const audioData = data.slice(1);
+                                
+                                // Forward binary audio directly to renderer
+                                sendToRenderer('ws-audio-received', {
+                                    audioType: audioType,
+                                    data: audioData.buffer.slice(audioData.byteOffset, audioData.byteOffset + audioData.byteLength)
+                                });
+                                return;
+                            }
+                        }
+                        
                         console.error('Error parsing WebSocket message:', error);
                     }
                 });
@@ -561,7 +581,7 @@ function setupWebSocketIpcHandlers() {
         }
     });
 
-    // Send audio stream (mic or system)
+    // Send audio stream (mic or system) - LEGACY base64 version
     ipcMain.handle('ws-send-audio-stream', async (event, audioType, data) => {
         try {
             if (!wsClient || wsClient.readyState !== WebSocket.OPEN) {
@@ -579,6 +599,29 @@ function setupWebSocketIpcHandlers() {
             return { success: true };
         } catch (error) {
             console.error('Error sending audio stream:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Send audio stream (binary) - OPTIMIZED version
+    ipcMain.handle('ws-send-audio-binary', async (event, audioType, arrayBuffer) => {
+        try {
+            if (!wsClient || wsClient.readyState !== WebSocket.OPEN) {
+                return { success: false, error: 'Not connected to WebSocket server' };
+            }
+
+            // Create a simple binary protocol:
+            // [1 byte: audioType (0=system, 1=mic)][remaining bytes: PCM data]
+            const audioTypeByte = audioType === 'mic' ? 1 : 0;
+            const header = Buffer.from([audioTypeByte]);
+            const audioData = Buffer.from(arrayBuffer);
+            const payload = Buffer.concat([header, audioData]);
+
+            wsClient.send(payload);
+
+            return { success: true };
+        } catch (error) {
+            console.error('Error sending binary audio stream:', error);
             return { success: false, error: error.message };
         }
     });
